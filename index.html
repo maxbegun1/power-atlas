@@ -7,7 +7,9 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
   html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; }
-  #map { height: 100%; background: #aad3df; }
+  #map { height: 100%; background: #e8e4dc; }
+  /* mute the basemap so power infrastructure stands out */
+  #map .leaflet-tile-pane { filter: grayscale(.9) contrast(.85) brightness(1.06); opacity: .45; }
   #panel {
     position: absolute; top: 10px; right: 10px; z-index: 1000;
     background: #fff; padding: 10px 14px; border-radius: 8px;
@@ -77,13 +79,13 @@ const props = t => ({
 });
 
 const POI_STYLE = {
-  substation:   { color: '#7a0177', radius: 7 },
-  plant:        { color: '#08304b', radius: 8 },
-  transformer:  { color: '#4d4d4d', radius: 5 },
-  generator:    { color: '#238b45', radius: 6 },
-  converter:    { color: '#b35806', radius: 6 },
-  switchgear:   { color: '#b35806', radius: 5 },
-  compensator:  { color: '#b35806', radius: 5 }
+  substation:   { color: '#7a0177', radius: 10 },
+  plant:        { color: '#08304b', radius: 12 },
+  transformer:  { color: '#4d4d4d', radius: 7 },
+  generator:    { color: '#238b45', radius: 8 },
+  converter:    { color: '#b35806', radius: 8 },
+  switchgear:   { color: '#b35806', radius: 7 },
+  compensator:  { color: '#b35806', radius: 7 }
 };
 
 let lastB = null;
@@ -131,14 +133,14 @@ async function load() {
     const p = f.properties;
     if (f.geometry.type === 'LineString') {
       const volts = String(p.voltage || '').split(';').map(Number).filter(n => n > 0);
-      L.geoJSON(f, { style: { color: lineColor(Math.max(...volts, 0)), weight: 3 } })
+      L.geoJSON(f, { style: { color: lineColor(Math.max(...volts, 0)), weight: Math.max(...volts, 0) >= 161 ? 6 : 4 } })
         .bindTooltip(tagValue(p), { sticky: true })
         .addTo(lineGroup(Math.max(...volts, 0)));
       nLine++;
     } else {
       const s = POI_STYLE[p.power] || { color: '#4d4d4d', radius: 5 };
       const [lon, lat] = f.geometry.coordinates;
-      const m = L.circleMarker([lat, lon], { radius: s.radius, color: s.color, weight: 2, fillOpacity: .85 })
+      const m = L.circleMarker([lat, lon], { radius: s.radius, color: '#fff', weight: 2, fillColor: s.color, fillOpacity: 1 })
         .bindPopup(tagValue(p));
       if (p.name && map.getZoom() >= 14)
         m.bindTooltip(p.name, { permanent: true, direction: 'top', className: 'poi-label' });
