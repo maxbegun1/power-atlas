@@ -80,13 +80,22 @@ async function load() {
     way["power"~"^(line|cable)$"](${bbox});
     nwr["power"~"^(substation|plant|transformer)$"](${bbox});
   );out geom;`;
-  try {
-    const r = await fetch('https://overpass-api.de/api/interpreter', {
-      method: 'POST', body: 'data=' + encodeURIComponent(q),
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-    });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const data = await r.json();
+  // overpass-api.de bot-filters some networks; use community mirrors first
+  const endpoints = [
+    'https://overpass.private.coffee/api/interpreter',
+    'https://maps.mail.ru/osm/tools/overpass/api/interpreter'
+  ];
+  let data = null;
+  for (const url of endpoints) {
+    try {
+      const r = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q),
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+      if (!r.ok) continue;
+      data = await r.json();
+      break;
+    } catch (e) { /* try next mirror */ }
+  }
+  if (!data) { status.textContent = 'All Overpass mirrors failed — retry in a moment.'; return; }
     for (const el of data.elements) {
       const f = toFeature(el);
       if (!f.geometry.coordinates.length) continue;
@@ -103,9 +112,6 @@ async function load() {
       }
     }
     status.textContent = data.elements.length + ' features (© OpenStreetMap)';
-  } catch (e) {
-    status.textContent = 'Failed: ' + e.message + ' — Overpass may be busy, retry in a moment.';
-  }
 }
 
 document.getElementById('reload').onclick = load;
