@@ -7,18 +7,23 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
   html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; }
-  #map { height: 100%; }
+  #map { height: 100%; background: #aad3df; }
   #panel {
     position: absolute; top: 10px; right: 10px; z-index: 1000;
     background: #fff; padding: 10px 14px; border-radius: 8px;
-    box-shadow: 0 1px 6px rgba(0,0,0,.4); font-size: 13px; line-height: 1.5;
-    max-width: 240px;
+    box-shadow: 0 1px 6px rgba(0,0,0,.4); font-size: 13px; line-height: 1.6;
+    max-width: 250px;
   }
   #panel button { display: block; width: 100%; margin-top: 6px; padding: 6px; cursor: pointer; }
   #status { color: #555; }
+  .legend label { display: block; cursor: pointer; }
   .legend b { display: inline-block; width: 12px; height: 4px; margin-right: 4px; vertical-align: middle; }
-  .legend span { display: block; }
-  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+  .dot { display: inline-block; width: 11px; height: 11px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+  .poi-label {
+    background: rgba(255,255,255,.85); border: none; border-radius: 3px;
+    padding: 0 3px; font-size: 10px; font-weight: 600; color: #222;
+  }
+  .leaflet-tooltip.poi-label::before { display: none; }
 </style>
 </head>
 <body>
@@ -26,13 +31,13 @@
 <div id="panel">
   <b>Power Atlas</b>
   <div class="legend">
-    <span><b style="background:#d7301f"></b>≥ 345 kV</span>
-    <span><b style="background:#fe9929"></b>161–344 kV</span>
-    <span><b style="background:#3690c0"></b>69–160 kV</span>
-    <span><b style="background:#969696"></b>&lt; 69 kV / other</span>
-    <span><span class="dot" style="background:#7a0177"></span>Substation</span>
-    <span><span class="dot" style="background:#08304b"></span>Power plant</span>
-    <span><span class="dot" style="background:#4d4d4d"></span>Transformer</span>
+    <label><input type="checkbox" id="cb-line" checked><b style="background:#d7301f"></b>Lines ≥ 345 kV</label>
+    <label><input type="checkbox" id="cb-line2" checked><b style="background:#fe9929"></b>161–344 kV</label>
+    <label><input type="checkbox" id="cb-line3" checked><b style="background:#3690c0"></b>69–160 kV</label>
+    <label><input type="checkbox" id="cb-line4" checked><b style="background:#969696"></b>&lt; 69 kV</label>
+    <label><input type="checkbox" id="cb-sub" checked><span class="dot" style="background:#7a0177"></span>Substations</label>
+    <label><input type="checkbox" id="cb-plant" checked><span class="dot" style="background:#08304b"></span>Power plants</label>
+    <label><input type="checkbox" id="cb-poi" checked><span class="dot" style="background:#238b45"></span>Other POIs (transformers, generators…)</label>
   </div>
   <div id="status">Loading…</div>
   <button id="reload">Reload this area</button>
@@ -43,44 +48,57 @@ const map = L.map('map').setView([41.13953, -80.84225], 14);
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
 }).addTo(map);
-const layer = L.layerGroup().addTo(map);
-const status = document.getElementById('status');
 
-const lineColor = v => v >= 345 ? '#d7301f' : v >= 161 ? '#fe9929' : v >= 69 ? '#3690c0' : '#969696';
+// one layer group per legend item, so checkboxes can filter
+const groups = {};
+for (const id of ['cb-line','cb-line2','cb-line3','cb-line4','cb-sub','cb-plant','cb-poi']) {
+  groups[id] = L.layerGroup().addTo(map);
+  document.getElementById(id).onchange = e => {
+    if (e.target.checked) groups[id].addTo(map); else map.removeLayer(groups[id]);
+  };
+}
+const lineGroup = v => v >= 345 ? groups['cb-line'] : v >= 161 ? groups['cb-line2'] : v >= 69 ? groups['cb-line3'] : groups['cb-line4'];
+
+const status = document.getElementById('status');
+const tagValue = p => {
+  const bits = [];
+  if (p.name) bits.push(p.name);
+  if (p.power) bits.push(p.power.replace(/_/g,' '));
+  if (p.voltage) bits.push(p.voltage + ' V');
+  if (p.source) bits.push('source: ' + p.source);
+  if (p.operator) bits.push('op: ' + p.operator);
+  return '<b>' + (p.name || '(' + p.power + ')') + '</b><br>' +
+    bits.slice(1).join('<br>');
+};
+
 const props = t => ({
   name: t.tags.name, voltage: t.tags.voltage, operator: t.tags.operator,
   source: t.tags['plant:source'], power: t.tags.power
 });
-const popup = p =>
-  '<b>' + (p.name || '(' + p.power + ')') + '</b><br>' +
-  (p.voltage ? 'Voltage: ' + p.voltage + ' V<br>' : '') +
-  (p.source ? 'Source: ' + p.source + '<br>' : '') +
-  (p.operator ? 'Operator: ' + p.operator : '');
 
-// Ways come as node lists; make GeoJSON line or point-at-centroid
-function toFeature(el) {
-  if (el.type === 'node')
-    return { type: 'Feature', geometry: { type: 'Point', coordinates: [el.lon, el.lat] }, properties: props(el) };
-  const pts = el.geometry.map(g => [g.lon, g.lat]);
-  const isLine = el.tags.power === 'line' || el.tags.power === 'cable';
-  const geom = isLine
-    ? { type: 'LineString', coordinates: pts }
-    : { type: 'Point', coordinates: pts.reduce((a, p) => [a[0] + p[0] / pts.length, a[1] + p[1] / pts.length], [0, 0]) };
-  return { type: 'Feature', geometry: geom, properties: props(el) };
-}
+const POI_STYLE = {
+  substation:   { color: '#7a0177', radius: 7 },
+  plant:        { color: '#08304b', radius: 8 },
+  transformer:  { color: '#4d4d4d', radius: 5 },
+  generator:    { color: '#238b45', radius: 6 },
+  converter:    { color: '#b35806', radius: 6 },
+  switchgear:   { color: '#b35806', radius: 5 },
+  compensator:  { color: '#b35806', radius: 5 }
+};
 
 let lastB = null;
+
 async function load() {
   lastB = map.getBounds();
   status.textContent = 'Loading…';
-  layer.clearLayers();
-  const b = map.getBounds();
+  for (const id in groups) groups[id].clearLayers();
+  const b = lastB;
   const bbox = [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()].join(',');
-  const q = `[out:json][timeout:60];(
+  const q = `[out:json][timeout:90];(
     way["power"~"^(line|cable)$"](${bbox});
-    nwr["power"~"^(substation|plant|transformer)$"](${bbox});
+    nwr["power"~"^(substation|plant|transformer|generator|converter|switchgear|compensator)$"](${bbox});
   );out geom;`;
-  // overpass-api.de bot-filters some networks; use community mirrors first
+  // overpass-api.de bot-filters some networks; community mirrors are more reliable
   const endpoints = [
     'https://overpass.private.coffee/api/interpreter',
     'https://maps.mail.ru/osm/tools/overpass/api/interpreter'
@@ -96,22 +114,41 @@ async function load() {
     } catch (e) { /* try next mirror */ }
   }
   if (!data) { status.textContent = 'All Overpass mirrors failed — retry in a moment.'; return; }
-    for (const el of data.elements) {
-      const f = toFeature(el);
-      if (!f.geometry.coordinates.length) continue;
-      const p = f.properties;
-      if (f.geometry.type === 'LineString') {
-        L.geoJSON(f, {
-          style: { color: lineColor(Math.max(...String(p.voltage || '').split(';').map(Number).filter(n => n > 0), 0)), weight: 3 }
-        }).bindPopup(popup(p)).addTo(layer);
-      } else {
-        const color = p.power === 'substation' ? '#7a0177' : p.power === 'plant' ? '#08304b' : '#4d4d4d';
-        L.circleMarker([f.geometry.coordinates[1], f.geometry.coordinates[0]],
-          { radius: p.power === 'substation' ? 6 : 4, color, fillOpacity: .8 })
-          .bindPopup(popup(p)).addTo(layer);
-      }
+
+  let nLine = 0, nSub = 0, nPlant = 0, nPoi = 0;
+  for (const el of data.elements) {
+    let f;
+    if (el.type === 'node') {
+      f = { geometry: { type: 'Point', coordinates: [el.lon, el.lat] }, properties: props(el) };
+    } else if (el.geometry) {
+      const pts = el.geometry.map(g => [g.lon, g.lat]);
+      const isLine = el.tags.power === 'line' || el.tags.power === 'cable';
+      f = { geometry: isLine
+        ? { type: 'LineString', coordinates: pts }
+        : { type: 'Point', coordinates: pts.reduce((a, p) => [a[0] + p[0] / pts.length, a[1] + p[1] / pts.length], [0, 0]) },
+        properties: props(el) };
+    } else continue;
+    const p = f.properties;
+    if (f.geometry.type === 'LineString') {
+      const volts = String(p.voltage || '').split(';').map(Number).filter(n => n > 0);
+      L.geoJSON(f, { style: { color: lineColor(Math.max(...volts, 0)), weight: 3 } })
+        .bindTooltip(tagValue(p), { sticky: true })
+        .addTo(lineGroup(Math.max(...volts, 0)));
+      nLine++;
+    } else {
+      const s = POI_STYLE[p.power] || { color: '#4d4d4d', radius: 5 };
+      const [lon, lat] = f.geometry.coordinates;
+      const m = L.circleMarker([lat, lon], { radius: s.radius, color: s.color, weight: 2, fillOpacity: .85 })
+        .bindPopup(tagValue(p));
+      if (p.name && map.getZoom() >= 14)
+        m.bindTooltip(p.name, { permanent: true, direction: 'top', className: 'poi-label' });
+      m.addTo(p.power === 'substation' ? groups['cb-sub'] : p.power === 'plant' ? groups['cb-plant'] : groups['cb-poi']);
+      if (p.power === 'substation') nSub++;
+      else if (p.power === 'plant') nPlant++;
+      else nPoi++;
     }
-    status.textContent = data.elements.length + ' features (© OpenStreetMap)';
+  }
+  status.textContent = `${data.elements.length} features — ${nLine} lines, ${nSub} substations, ${nPlant} plants, ${nPoi} POIs (© OpenStreetMap)`;
 }
 
 document.getElementById('reload').onclick = load;
